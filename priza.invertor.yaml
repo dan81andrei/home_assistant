@@ -1,0 +1,167 @@
+blueprint:
+  name: PRIZA / INVERTOR
+  description: "Control PRIZA cu INVERTOR SOLAR"
+  domain: automation
+  input:
+    target_entity:
+      name: PRIZA
+      selector:
+        entity:
+    sensor_entity:
+      name: INVERTOR
+      default:
+      selector:
+        entity:
+    upper_bound:
+      name: Valoare > "turned off"
+      selector:
+        entity:
+          domain: input_number
+    lower_bound:
+      name: Valoare < "turned on"
+      selector:
+        entity:
+          domain: input_number
+    time_ranges:
+      name: Intervale si intarziere
+      description: >-
+        00:00:00-23:59:59,30
+      selector:
+        entity:
+          domain: input_text
+    target_on_state:
+      name: Inversare stare PRIZA "On"
+      default: 'on'
+      selector:
+        entity:
+          domain: input_text
+    target_off_state:
+      name: Inversare stare PRIZA "Off"
+      default: 'off'
+      selector:
+        entity:
+          domain: input_text
+    time_end_state:
+      name: Stare PRIZA la terminarea intervalului
+      default: 'off'
+      selector:
+        entity:
+          domain: input_text
+
+mode: single
+
+variables:
+  _time_ranges: !input "time_ranges"
+  time_ranged_delay: >-
+      {% set _time_ranges = _time_ranges | replace(' ', '') %}
+      {% set delay = _time_ranges | int(-1) %}
+      {% if delay >= 0 %}
+        {{ delay }}
+      {% else %}
+        {% set current_time = now().strftime("%H:%M:%S") %}
+        {% for tr in (_time_ranges or '').split(';') if tr %}
+          {% set val = tr.split(',') %}
+          {% if val | length == 2 and val[0] %}
+            {% set t = val[0].split('-') %}
+            {% if t | length == 2 %}
+              {% if t[0] == t[1] or
+                    (t[0] < t[1] and t[0] <= current_time and current_time <= t[1]) or
+                    (t[0] > t[1] and (current_time >= t[0] or current_time <= t[1]))
+              %}
+                {{ val[1] | default(0, true) }}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+  target_entity: !input "target_entity"
+  sensor_entity: !input "sensor_entity"
+  target_on_state: !input "target_on_state"
+  target_off_state: !input "target_off_state"
+  time_end_state: !input "time_end_state"
+  lower_bound: !input "lower_bound"
+  upper_bound: !input "upper_bound"
+
+trigger:
+  - platform: state
+    entity_id: !input "sensor_entity"
+  - platform: state
+    entity_id: !input "target_entity"
+  - platform: event
+    event_type: automation_reloaded
+  - platform: homeassistant
+    event: start
+
+action:
+  - choose:
+      - conditions:
+        - condition: template
+          # Out of time range.
+          value_template: "{{ not (time_ranged_delay or time_ranged_delay == 0) }}"
+        sequence:
+          - condition: template
+            value_template: "{{ not is_state(target_entity, time_end_state) }}"
+          - service: logbook.log
+            # Add a logbook entry to indicate what triggered this action.
+            data_template:
+              name: "{{ state_attr(target_entity, 'friendly_name') }}"
+              message: "is set to {{ time_end_state }} due to out of defined time range"
+          - service_template: "homeassistant.turn_{{ time_end_state }}"
+            data_template:
+                entity_id: "{{ target_entity }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ states(sensor_entity) < lower_bound }}"
+        sequence:
+          - condition: template
+            value_template: "{{ not is_state(target_entity, target_on_state) }}"
+          - service: logbook.log
+            # Add a logbook entry to indicate what triggered this action.
+            data_template:
+              name: "{{ state_attr(target_entity, 'friendly_name') }}"
+              message: >-
+                  will be turned {{ target_on_state }} after {{ time_ranged_delay }}
+                  due to {{ state_attr(sensor_entity, 'friendly_name') }} returned
+                  {{ states(sensor_entity) }}, which is lower than defined value 
+                  {{ lower_bound }}.
+          - delay: "{{ time_ranged_delay }}"
+          - service: logbook.log
+            # Add a logbook entry to indicate what triggered this action.
+            data_template:
+              name: "{{ state_attr(target_entity, 'friendly_name') }}"
+              message: >-
+                  is turned {{ target_on_state }} due to 
+                  {{ state_attr(sensor_entity, 'friendly_name') }}
+                  returned {{ states(sensor_entity) }}, which is lower than
+                  defined value {{ lower_bound }}.
+          - service_template: "homeassistant.turn_{{ target_on_state }}"
+            data_template:
+                entity_id: "{{ target_entity }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ states(sensor_entity) > upper_bound }}"
+        sequence:
+          - condition: template
+            value_template: "{{ not is_state(target_entity, target_off_state) }}"
+          - service: logbook.log
+            # Add a logbook entry to indicate what triggered this action.
+            data_template:
+              name: "{{ state_attr(target_entity, 'friendly_name') }}"
+              message: >-
+                  will be turned {{ target_off_state }} after {{ time_ranged_delay }}
+                  due to {{ state_attr(sensor_entity, 'friendly_name') }} returned
+                  {{ states(sensor_entity) }}, which is higher than defined value 
+                  {{ upper_bound }}.
+          - delay: "{{ time_ranged_delay }}"
+          - service: logbook.log
+            # Add a logbook entry to indicate what triggered this action.
+            data_template:
+              name: "{{ state_attr(target_entity, 'friendly_name') }}"
+              message: >-
+                  is turned {{ target_off_state }} due to 
+                  {{ state_attr(sensor_entity, 'friendly_name') }}
+                  returned {{ states(sensor_entity) }}, which is higher than
+                  defined value {{ upper_bound }}.
+          - service_template: "homeassistant.turn_{{ target_off_state }}"
+            data_template:
+                entity_id: "{{ target_entity }}"
